@@ -59,9 +59,10 @@ def main() -> None:
         base_url=config.skymail_base_url,
         email=config.skymail_email,
         password=config.skymail_password,
-        default_domain=config.default_domain,
+        preferred_domains=config.preferred_domains,
         random_local_length=config.random_local_length,
         request_timeout_sec=config.request_timeout_sec,
+        domain_failure_threshold=config.domain_failure_threshold,
     )
 
     inbox = client.create_random_inbox(

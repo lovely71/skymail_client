@@ -100,11 +100,12 @@ APP_TOKEN=change-me
 SKYMAIL_BASE_URL=https://your-skymail.example.com
 SKYMAIL_EMAIL=your-login@example.com
 SKYMAIL_PASSWORD=your-password
-DEFAULT_DOMAIN=example.com
+PREFERRED_DOMAINS=example.com,example.org
 RANDOM_LOCAL_LENGTH=10
 DEFAULT_POLL_MS=3000
 DEFAULT_WAIT_TIMEOUT_MS=30000
 REQUEST_TIMEOUT_SEC=30
+DOMAIN_FAILURE_THRESHOLD=3
 ```
 
 3. 启动服务 / Start the service
@@ -129,16 +130,20 @@ curl http://127.0.0.1:3000/health
 | `SKYMAIL_BASE_URL` | Yes | 目标 SkyMail 站点根地址 | Base URL of the target SkyMail deployment |
 | `SKYMAIL_EMAIL` | Yes | 用于登录的 SkyMail 邮箱账号 | SkyMail login email used by the bridge |
 | `SKYMAIL_PASSWORD` | Yes | 用于登录的 SkyMail 密码 | SkyMail login password used by the bridge |
-| `DEFAULT_DOMAIN` | No | 默认用于生成随机邮箱的域名 | Preferred domain for random inbox creation |
+| `PREFERRED_DOMAINS` | No | 优先使用的域名池，支持逗号分隔；留空则从上游可用域名中随机选择 | Preferred domain pool, comma-separated; if empty, a healthy domain is chosen randomly from the upstream available list |
 | `RANDOM_LOCAL_LENGTH` | No | 随机邮箱前缀长度 | Length of the generated local part |
 | `DEFAULT_POLL_MS` | No | 长轮询默认轮询间隔，单位毫秒 | Default polling interval in milliseconds |
 | `DEFAULT_WAIT_TIMEOUT_MS` | No | 长轮询默认等待超时，单位毫秒 | Default long-poll timeout in milliseconds |
 | `REQUEST_TIMEOUT_SEC` | No | 请求上游 SkyMail 的超时秒数 | Timeout for upstream SkyMail requests in seconds |
+| `DOMAIN_FAILURE_THRESHOLD` | No | 域名连续失败达到该次数后标记为不可用，默认 `3` | Consecutive failure threshold before a domain is marked unavailable, default `3` |
 
 ## Example Script / 示例脚本
 
 中文：项目自带一个端到端示例脚本 `example_wait_code.py`，可以生成随机邮箱、等待收件、提取验证码。  
 English: The repository includes `example_wait_code.py`, an end-to-end demo that creates a random inbox, waits for mail, and extracts likely verification codes.
+
+中文：如果配置了 `PREFERRED_DOMAINS`，会从这些健康域名中选择；如果未配置，则会从上游可用域名中随机选择。  
+English: If `PREFERRED_DOMAINS` is configured, the script chooses from healthy domains in that pool; otherwise it randomly selects from the upstream available domains.
 
 ### CLI Arguments / 命令行参数表
 
@@ -196,6 +201,25 @@ English: Returns the domain list exposed by the target SkyMail deployment.
 | --- | --- | --- | --- |
 | None | No | 无参数 | No query parameters |
 
+#### Response Fields / 返回字段
+
+| Field | Type | 中文说明 | English Description |
+| --- | --- | --- | --- |
+| `domains` | array | 上游公开可用域名列表 | Publicly available domains from upstream |
+| `preferredDomains` | array | 当前配置的优先域名池 | Configured preferred domain pool |
+| `domainStatus` | array | 域名健康状态列表 | Domain health status list |
+
+#### Domain Status Object / 域名状态字段
+
+| Field | Type | 中文说明 | English Description |
+| --- | --- | --- | --- |
+| `domain` | string | 域名 | Domain |
+| `enabled` | boolean | 是否可继续参与选取 | Whether the domain can still be selected |
+| `failureCount` | integer | 当前连续失败次数 | Current consecutive failure count |
+| `threshold` | integer | 熔断阈值 | Circuit-break threshold |
+| `configured` | boolean | 是否来自配置域名池 | Whether it comes from configured pool |
+| `available` | boolean | 是否仍在上游可用列表中 | Whether it is still exposed by upstream |
+
 示例 / Example:
 
 ```bash
@@ -223,6 +247,8 @@ English: Creates a random inbox address.
 | `localPart` | string | 本地前缀部分 | Local part of the inbox |
 | `domain` | string | 实际使用的域名 | Domain that was selected |
 | `mode` | string | 当前收件模式 | Current inbox mode |
+| `selectionStrategy` | string | 域名选择策略，例如 `requested`、`preferred_pool`、`random_available` | Domain selection strategy, such as `requested`, `preferred_pool`, or `random_available` |
+| `domainStatus` | array | 当前域名健康状态快照 | Current domain health snapshot |
 
 示例 / Example:
 
@@ -294,7 +320,23 @@ English: Long-polls until a new message arrives or the timeout is reached.
 | --- | --- | --- | --- |
 | `address` | string | 当前等待的邮箱地址 | Inbox address being watched |
 | `afterId` | integer | 等待起始游标 | Starting cursor |
+| `domain` | string | 当前邮箱所属域名 | Domain of the watched inbox |
+| `domainFailureCount` | integer | 该域名当前连续失败次数 | Current consecutive failure count for this domain |
+| `domainAvailable` | boolean | 该域名当前是否仍可选 | Whether the domain is still selectable |
 | `messages` | array | 新收到的邮件列表 | Newly received messages |
+
+## Domain Selection Rules / 域名选择规则
+
+1. 中文：如果请求里显式传了 `domain`，优先使用该域名。  
+   English: If `domain` is explicitly provided in the request, that domain is used first.
+2. 中文：如果没有传 `domain`，并且配置了 `PREFERRED_DOMAINS`，则从这些健康域名中随机选择。  
+   English: If `domain` is not provided and `PREFERRED_DOMAINS` is configured, a healthy domain is selected randomly from that pool.
+3. 中文：如果没有配置 `PREFERRED_DOMAINS`，则从上游公开可用域名中随机选择健康域名。  
+   English: If `PREFERRED_DOMAINS` is empty, a healthy domain is selected randomly from the upstream available domains.
+4. 中文：某个域名在 `wait` 流程中连续失败达到 `DOMAIN_FAILURE_THRESHOLD` 次后，会被标记为不可用。  
+   English: A domain is marked unavailable after it fails consecutively in the `wait` flow `DOMAIN_FAILURE_THRESHOLD` times.
+5. 中文：一旦该域名后续成功收到邮件，失败计数会自动清零并恢复可用。  
+   English: Once that domain later receives a message successfully, its failure counter is reset and it becomes available again.
 
 示例 / Example:
 

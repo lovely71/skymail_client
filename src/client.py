@@ -56,6 +56,16 @@ class RawResponse:
     challenge: bool
 
 
+@dataclass
+class DomainStatus:
+    domain: str
+    enabled: bool
+    failure_count: int
+    threshold: int
+    configured: bool
+    available: bool
+
+
 class SkyMailApiError(RuntimeError):
     def __init__(self, message: str, *, code: Any = None, status: int | None = None, payload: Any = None) -> None:
         super().__init__(message)
@@ -71,17 +81,23 @@ class SkyMailClient:
         base_url: str,
         email: str,
         password: str,
-        default_domain: str = "",
+        preferred_domains: tuple[str, ...] | list[str] | None = None,
         random_local_length: int = 10,
         request_timeout_sec: int = 30,
+        domain_failure_threshold: int = 3,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.email = email
         self.password = password
-        self.default_domain = _normalize_domain(default_domain)
+        self.preferred_domains = tuple(
+            domain for domain in (_normalize_domain(item) for item in (preferred_domains or ())) if domain
+        )
         self.random_local_length = random_local_length
         self.request_timeout_sec = request_timeout_sec
+        self.domain_failure_threshold = max(1, int(domain_failure_threshold))
         self.token: str | None = None
+        self.domain_failures: dict[str, int] = {}
+        self.unavailable_domains: set[str] = set()
 
     def _raw_request(
         self,
@@ -238,6 +254,56 @@ class SkyMailClient:
         raw_domains = config.get("domainList", [])
         return [domain for domain in (_normalize_domain(item) for item in raw_domains) if _is_usable_domain(domain)]
 
+    @staticmethod
+    def extract_domain(address: str) -> str:
+        parts = str(address or "").strip().lower().split("@", 1)
+        return parts[1] if len(parts) == 2 else ""
+
+    def record_domain_success(self, domain: str) -> None:
+        normalized = _normalize_domain(domain)
+        if not normalized:
+            return
+        self.domain_failures[normalized] = 0
+        self.unavailable_domains.discard(normalized)
+
+    def record_domain_failure(self, domain: str) -> int:
+        normalized = _normalize_domain(domain)
+        if not normalized:
+            return 0
+        failures = self.domain_failures.get(normalized, 0) + 1
+        self.domain_failures[normalized] = failures
+        if failures >= self.domain_failure_threshold:
+            self.unavailable_domains.add(normalized)
+        return failures
+
+    def get_domain_status(self, available_domains: list[str] | None = None) -> list[dict[str, Any]]:
+        available = available_domains if available_domains is not None else self.get_domains()
+        available_set = set(available)
+        configured_set = set(self.preferred_domains)
+        all_domains = sorted(available_set | configured_set | set(self.domain_failures) | set(self.unavailable_domains))
+
+        statuses: list[dict[str, Any]] = []
+        for domain in all_domains:
+            status = DomainStatus(
+                domain=domain,
+                enabled=domain not in self.unavailable_domains,
+                failure_count=self.domain_failures.get(domain, 0),
+                threshold=self.domain_failure_threshold,
+                configured=domain in configured_set,
+                available=domain in available_set,
+            )
+            statuses.append(
+                {
+                    "domain": status.domain,
+                    "enabled": status.enabled,
+                    "failureCount": status.failure_count,
+                    "threshold": status.threshold,
+                    "configured": status.configured,
+                    "available": status.available,
+                }
+            )
+        return statuses
+
     def assert_no_recipient_mode(self) -> dict[str, Any]:
         settings = self.get_private_settings()
         if settings.get("noRecipient") != 0:
@@ -254,23 +320,58 @@ class SkyMailClient:
         tail = "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(size - 1))
         return first + tail
 
-    def create_random_inbox(self, *, domain: str = "", local_length: int | None = None) -> dict[str, Any]:
-        self.assert_no_recipient_mode()
-        domains = self.get_domains()
-        if not domains:
+    def choose_domain(self, requested_domain: str = "") -> tuple[str, list[str], str]:
+        available_domains = self.get_domains()
+        if not available_domains:
             raise SkyMailApiError("No usable domains were exposed by the target site.")
 
-        preferred = _normalize_domain(domain or self.default_domain)
-        selected = preferred or domains[0]
-        if selected not in domains:
-            raise SkyMailApiError(f"Requested domain is not available: {selected}")
+        available_set = set(available_domains)
+        requested = _normalize_domain(requested_domain)
 
+        if requested:
+            if requested not in available_set:
+                raise SkyMailApiError(f"Requested domain is not available: {requested}")
+            if requested in self.unavailable_domains:
+                raise SkyMailApiError(f"Requested domain is currently marked unavailable: {requested}")
+            return requested, available_domains, "requested"
+
+        if self.preferred_domains:
+            preferred_candidates = [
+                domain
+                for domain in self.preferred_domains
+                if domain in available_set and domain not in self.unavailable_domains
+            ]
+            if not preferred_candidates:
+                raise SkyMailApiError(
+                    "All configured domains are currently unavailable or not exposed by the target site.",
+                    code="NO_HEALTHY_CONFIGURED_DOMAIN",
+                    payload={
+                        "preferredDomains": list(self.preferred_domains),
+                        "domainStatus": self.get_domain_status(available_domains),
+                    },
+                )
+            return random.choice(preferred_candidates), available_domains, "preferred_pool"
+
+        random_candidates = [domain for domain in available_domains if domain not in self.unavailable_domains]
+        if not random_candidates:
+            raise SkyMailApiError(
+                "All available domains are currently marked unavailable.",
+                code="NO_HEALTHY_AVAILABLE_DOMAIN",
+                payload={"domainStatus": self.get_domain_status(available_domains)},
+            )
+        return random.choice(random_candidates), available_domains, "random_available"
+
+    def create_random_inbox(self, *, domain: str = "", local_length: int | None = None) -> dict[str, Any]:
+        self.assert_no_recipient_mode()
+        selected, available_domains, strategy = self.choose_domain(domain)
         local_part = self.random_local_part(local_length)
         return {
             "address": f"{local_part}@{selected}",
             "localPart": local_part,
             "domain": selected,
             "mode": "noRecipient",
+            "selectionStrategy": strategy,
+            "domainStatus": self.get_domain_status(available_domains),
         }
 
     @staticmethod
@@ -324,14 +425,19 @@ class SkyMailClient:
     ) -> dict[str, Any]:
         deadline = time.time() + max(1000, timeout_ms) / 1000
         cursor = max(0, int(after_id))
+        domain = self.extract_domain(address)
 
         while time.time() <= deadline:
             listed = self.list_inbox_messages(address, limit=limit, mode=mode)
             messages = [item for item in listed["messages"] if int(item.get("emailId", 0) or 0) > cursor]
             if messages:
+                self.record_domain_success(domain)
                 return {
                     "address": address,
                     "afterId": after_id,
+                    "domain": domain,
+                    "domainFailureCount": self.domain_failures.get(domain, 0),
+                    "domainAvailable": domain not in self.unavailable_domains,
                     "messages": messages,
                 }
 
@@ -343,9 +449,13 @@ class SkyMailClient:
 
             time.sleep(max(1000, poll_ms) / 1000)
 
+        failures = self.record_domain_failure(domain)
         return {
             "address": address,
             "afterId": after_id,
+            "domain": domain,
+            "domainFailureCount": failures,
+            "domainAvailable": domain not in self.unavailable_domains,
             "messages": [],
         }
 

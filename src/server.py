@@ -17,9 +17,10 @@ CLIENT = SkyMailClient(
     base_url=CONFIG.skymail_base_url,
     email=CONFIG.skymail_email,
     password=CONFIG.skymail_password,
-    default_domain=CONFIG.default_domain,
+    preferred_domains=CONFIG.preferred_domains,
     random_local_length=CONFIG.random_local_length,
     request_timeout_sec=CONFIG.request_timeout_sec,
+    domain_failure_threshold=CONFIG.domain_failure_threshold,
 )
 
 
@@ -65,7 +66,16 @@ class SkyMailHandler(BaseHTTPRequestHandler):
 
         try:
             if self.command == "GET" and path == "/domains":
-                self._send_json(HTTPStatus.OK, {"ok": True, "domains": CLIENT.get_domains()})
+                domains = CLIENT.get_domains()
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "domains": domains,
+                        "preferredDomains": list(CONFIG.preferred_domains),
+                        "domainStatus": CLIENT.get_domain_status(domains),
+                    },
+                )
                 return
 
             if self.command == "POST" and path == "/inboxes/random":

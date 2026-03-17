@@ -36,6 +36,18 @@ def _read_int(name: str, fallback: int) -> int:
         return fallback
 
 
+def _read_domains(value: str) -> tuple[str, ...]:
+    if not value:
+        return tuple()
+
+    domains: list[str] = []
+    for item in value.split(","):
+        domain = item.strip().lstrip("@").lower()
+        if domain and domain not in domains:
+            domains.append(domain)
+    return tuple(domains)
+
+
 @dataclass(frozen=True)
 class Config:
     host: str
@@ -44,15 +56,19 @@ class Config:
     skymail_base_url: str
     skymail_email: str
     skymail_password: str
-    default_domain: str
+    preferred_domains: tuple[str, ...]
     random_local_length: int
     default_poll_ms: int
     default_wait_timeout_ms: int
     request_timeout_sec: int
+    domain_failure_threshold: int
 
 
 def load_config() -> Config:
     load_dotenv()
+    preferred_domains = _read_domains(
+        os.getenv("PREFERRED_DOMAINS", "") or os.getenv("DEFAULT_DOMAIN", "")
+    )
 
     return Config(
         host=os.getenv("HOST", "127.0.0.1"),
@@ -61,11 +77,12 @@ def load_config() -> Config:
         skymail_base_url=os.getenv("SKYMAIL_BASE_URL", "").rstrip("/"),
         skymail_email=os.getenv("SKYMAIL_EMAIL", ""),
         skymail_password=os.getenv("SKYMAIL_PASSWORD", ""),
-        default_domain=os.getenv("DEFAULT_DOMAIN", "").lstrip("@").strip().lower(),
+        preferred_domains=preferred_domains,
         random_local_length=max(4, _read_int("RANDOM_LOCAL_LENGTH", 10)),
         default_poll_ms=max(1000, _read_int("DEFAULT_POLL_MS", 3000)),
         default_wait_timeout_ms=max(1000, _read_int("DEFAULT_WAIT_TIMEOUT_MS", 30000)),
         request_timeout_sec=max(5, _read_int("REQUEST_TIMEOUT_SEC", 30)),
+        domain_failure_threshold=max(1, _read_int("DOMAIN_FAILURE_THRESHOLD", 3)),
     )
 
 
