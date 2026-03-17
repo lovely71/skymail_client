@@ -1,9 +1,26 @@
 # SkyMail Inbox Bridge
 
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/lovely71/skymail_client)](./LICENSE)
+[![Last Commit](https://img.shields.io/github/last-commit/lovely71/skymail_client)](https://github.com/lovely71/skymail_client/commits/main)
+[![Dependencies](https://img.shields.io/badge/dependencies-standard--library-success)](./src)
+
 中文：一个基于 Python 标准库的 SkyMail 收件桥接服务，用来把 SkyMail 站点封装成更容易集成的随机邮箱与收件 API。  
 English: A lightweight Python-only bridge that turns a SkyMail deployment into an easier-to-integrate random inbox and message retrieval API.
 
-## Features / 功能
+## Overview / 项目简介
+
+中文：这个项目适合把现有 SkyMail 站点包装成一个更稳定、更容易被业务系统调用的中间层。  
+English: This project wraps an existing SkyMail deployment into a simpler integration layer for backend services.
+
+适用场景 / Typical use cases:
+
+- 中文：注册测试、验证码收集、临时邮箱、自动化集成测试  
+  English: Signup testing, verification-code collection, temporary inboxes, and integration testing.
+- 中文：内部工具统一接入 SkyMail，而不是每个系统单独处理登录和轮询  
+  English: Internal tools that should not implement SkyMail login and polling by themselves.
+
+## Features / 功能特性
 
 - 中文：获取站点公开可用的域名列表  
   English: List publicly available domains from the target SkyMail deployment.
@@ -13,32 +30,32 @@ English: A lightweight Python-only bridge that turns a SkyMail deployment into a
   English: Read messages delivered to a specific random inbox.
 - 中文：长轮询等待新邮件  
   English: Wait for new messages with long polling.
-- 中文：内置 Cloudflare 常见拦截兼容头  
-  English: Sends browser-like headers to avoid common Cloudflare signature blocks.
-
-## Use Cases / 使用场景
-
-- 中文：注册测试、验证码收集、临时邮箱、自动化集成测试  
-  English: Signup testing, verification-code collection, temporary inboxes, and integration testing.
+- 中文：内置浏览器风格请求头，兼容部分 Cloudflare 限制  
+  English: Sends browser-like headers to improve compatibility with some Cloudflare-protected deployments.
+- 中文：纯 Python 标准库实现，无第三方依赖  
+  English: Pure Python standard-library implementation with no third-party dependencies.
 
 ## How It Works / 工作原理
 
 中文：本项目不依赖 `/api/public/*`，而是用一个已有 SkyMail 账号登录后调用后台接口。  
 English: This project does not depend on `/api/public/*`; it logs in with an existing SkyMail account and uses authenticated backend APIs.
 
-主要接口 / Main upstream APIs:
+主要上游接口 / Main upstream APIs:
 
 - `POST /api/login`
 - `GET /api/setting/websiteConfig`
 - `GET /api/setting/query`
 - `GET /api/allEmail/list`
-- `POST /api/email/send`（仅用于自测示例 / only used by the optional self-test flow）
+- `POST /api/email/send`
+
+中文：这样做的好处是把登录、token 刷新、轮询和 Cloudflare 兼容逻辑集中到一个服务里。  
+English: This centralizes login, token refresh, polling, and Cloudflare compatibility in one place.
 
 ## Requirements / 使用前提
 
 1. 中文：登录账号需要有足够权限，例如 `all-email:query`。  
-   English: The login account must have enough permissions, for example `all-email:query`.
-2. 中文：如果要接收“未创建的随机地址”邮件，目标站点必须允许未创建收件人接收邮件。  
+   English: The login account must have sufficient permissions, such as `all-email:query`.
+2. 中文：如果要接收未创建的随机地址邮件，目标站点必须允许未创建收件人接收邮件。  
    English: If you want random unprovisioned inboxes to receive mail, the target deployment must allow delivery to non-created recipients.
 
 ## Cloudflare Notes / Cloudflare 说明
@@ -46,7 +63,7 @@ English: This project does not depend on `/api/public/*`; it logs in with an exi
 中文：部分部署会封禁 Python 默认 `User-Agent`，返回 `Error 1010`。本项目默认发送浏览器风格请求头，以兼容这类站点。  
 English: Some deployments block Python's default `User-Agent` and return `Error 1010`. This project sends browser-like headers by default to improve compatibility.
 
-中文：如果站点所有者对 API 路径启用了更严格的 WAF 或 Challenge，则需要服务端放行，客户端代码无法稳定绕过。  
+中文：如果站点对 API 路径启用了更严格的 WAF 或 Challenge，则需要服务端放行，客户端代码无法稳定绕过。  
 English: If the site owner applies stricter WAF or challenge rules to the API routes, the API paths must be allowed on the server side. Client code cannot reliably bypass that.
 
 ## Project Layout / 项目结构
@@ -55,7 +72,10 @@ English: If the site owner applies stricter WAF or challenge rules to the API ro
 .
 |-- .env.example
 |-- .gitignore
+|-- CHANGELOG.md
+|-- RELEASE_NOTES_v0.1.0.md
 |-- example_wait_code.py
+|-- LICENSE
 |-- README.md
 `-- src
     |-- client.py
@@ -112,8 +132,8 @@ curl http://127.0.0.1:3000/health
 | `DEFAULT_DOMAIN` | No | 默认用于生成随机邮箱的域名 | Preferred domain for random inbox creation |
 | `RANDOM_LOCAL_LENGTH` | No | 随机邮箱前缀长度 | Length of the generated local part |
 | `DEFAULT_POLL_MS` | No | 长轮询默认轮询间隔，单位毫秒 | Default polling interval in milliseconds |
-| `DEFAULT_WAIT_TIMEOUT_MS` | No | 长轮询默认超时时间，单位毫秒 | Default long-poll timeout in milliseconds |
-| `REQUEST_TIMEOUT_SEC` | No | 访问上游 SkyMail 的超时秒数 | Timeout for upstream SkyMail requests in seconds |
+| `DEFAULT_WAIT_TIMEOUT_MS` | No | 长轮询默认等待超时，单位毫秒 | Default long-poll timeout in milliseconds |
+| `REQUEST_TIMEOUT_SEC` | No | 请求上游 SkyMail 的超时秒数 | Timeout for upstream SkyMail requests in seconds |
 
 ## Example Script / 示例脚本
 
@@ -283,6 +303,11 @@ curl "http://127.0.0.1:3000/inboxes/demo123%40example.com/wait?afterId=0&timeout
   -H "x-api-key: change-me"
 ```
 
+## License / 许可证
+
+中文：当前仓库使用 MIT License。  
+English: This repository is released under the MIT License.
+
 ## Security Recommendations / 安全建议
 
 - 中文：不要提交 `.env` 到仓库  
@@ -296,20 +321,9 @@ curl "http://127.0.0.1:3000/inboxes/demo123%40example.com/wait?afterId=0&timeout
 - 中文：确认目标站点不会暴露超出预期范围的邮件数据  
   English: Review whether the target deployment exposes mail beyond your intended scope.
 
-## Publishing Checklist / 发布前检查表
+## Release Notes / 发布说明
 
-- [ ] 中文：仓库里没有 `.env`  
-      English: `.env` is not present in the repository.
-- [ ] 中文：没有真实目标域名被硬编码  
-      English: No real target domain is hardcoded.
-- [ ] 中文：没有真实账号或密码出现在示例中  
-      English: No real account or password appears in examples.
-- [ ] 中文：`__pycache__` 和 `.pyc` 已忽略  
-      English: `__pycache__` and `.pyc` files are ignored.
-- [ ] 中文：示例命令已使用占位值  
-      English: Example commands use placeholder values.
-
-## License / 许可证
-
-中文：发布前请补充你自己的许可证。  
-English: Add your preferred license before publishing.
+- 中文：首个版本说明见 [RELEASE_NOTES_v0.1.0.md](./RELEASE_NOTES_v0.1.0.md)  
+  English: The first release notes are available in [RELEASE_NOTES_v0.1.0.md](./RELEASE_NOTES_v0.1.0.md).
+- 中文：变更历史见 [CHANGELOG.md](./CHANGELOG.md)  
+  English: The changelog is available in [CHANGELOG.md](./CHANGELOG.md).
